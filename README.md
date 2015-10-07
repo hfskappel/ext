@@ -1,2 +1,3 @@
-# pox
-pox controller script with bellman ford algorithm
+# POX
+
+A POX controller script with Bellman-Ford algorithm
