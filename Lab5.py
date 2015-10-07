@@ -233,7 +233,7 @@ def policy(src_dpid, dst_dpid, src_adr, dst_adr):
 
 
     #Policy: Prefered route
-    # Vertex = how much a route is worth.
+    # Use metrics
     ############################################################################
     #if src_adr == EthAddr("9e:12:33:2f:6a:19") and dst_adr == EthAddr("9e:2e:6b:0f:25:91"):
         #route = [1, 2, 4, 5]
