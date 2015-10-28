@@ -216,9 +216,9 @@ def policy(src_dpid, dst_dpid, src_adr, dst_adr):
             generate_Flows(r, src_adr, dst_adr)
             return
 
+
     else:
         print "No path between switch: ", dst_dpid, " and switch: ", src_dpid
-
 
 
 def _on_timer():
