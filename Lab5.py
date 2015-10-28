@@ -2,7 +2,7 @@ from pox.core import core
 from collections import defaultdict
 from pox.lib.recoco import Timer
 import pox.openflow.libopenflow_01 as of
-from pox.lib.addresses import IPAddr, EthAddr
+import operator
 
 link_list = []
 switches = []
@@ -11,7 +11,9 @@ adjacency = defaultdict(lambda:defaultdict(lambda:None))
 adjpolicy = defaultdict(lambda:defaultdict(lambda:None))
 table = {}
 mactable = {}
+path = {}
 log = core.getLogger()
+routes = []
 
 def bellman(src_dpid, dst_dpid):
     # Bellman is the function that finds the shortest path between switches
@@ -129,20 +131,44 @@ def _handle_ConnectionUp(event):
     sw_con.append(event)
 
 
+def _handle_aggregate(event):
+    path[event.dpid]= event.stats.packet_count
+    print "AGGREGATE STATUS: Switch: ", event.dpid, "Packet count: ", event.stats.packet_count, " Byte count: ", event.stats.byte_count, "Flow count: ", event.stats.flow_count
+
+
 def link_event(event):
     global link_list
     link_list = core.openflow_discovery.adjacency
-    adjacency[event.link.dpid1][event.link.dpid2] = event.link.port1
+
+    if event.added:
+        adjacency[event.link.dpid1][event.link.dpid2] = event.link.port1
+        #Removes the rules from the switch. Forces the packet to the controller and new shortest path is generated
+        msg = of.ofp_flow_mod()
+        msg.command = 0x0003
+        for sw in sw_con:       #Removes all rules on switch.
+            if event.link.dpid1 == sw.connection.dpid:
+                sw.connection.send(msg)
+            elif event.link.dpid1 == sw.connection.dpid:
+                sw.connection.send(msg)
+
+
+    if event.removed:
+    #If a link goes down
+        del adjacency[event.link.dpid1][event.link.dpid2]
+        #Removes the rules from the switch. Forces the packet to the controller and new shortest path is generated
+        msg = of.ofp_flow_mod()
+        msg.command = 0x0003
+        for sw in sw_con:       #Removes all rules on switch.
+            if event.link.dpid1 == sw.connection.dpid:
+                sw.connection.send(msg)
+            elif event.link.dpid1 == sw.connection.dpid:
+                sw.connection.send(msg)
 
 
 def _handle_PacketIn(event):
     packet = event.parsed
     src = table.get(packet.src)
     dst = table.get(packet.dst)
-
-    for m in table:
-        print "MAC's in table: ",m
-
 
     if (src and dst) is not None:
 
@@ -161,85 +187,44 @@ def _handle_PacketIn(event):
             msg = of.ofp_packet_out(data = event.ofp)
             msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))      #flood to all except input port
             event.connection.send(msg)
-            print "Broadcast from: ", packet.src, " on port: ", event.port, "want to connect to: ", packet.dst
-
+            #print "Broadcast from: ", packet.src, " on port: ", event.port, "want to connect to: ", packet.dst
 
 
 
 def policy(src_dpid, dst_dpid, src_adr, dst_adr):
-    #Policy to force bellman to use these links
-    adjpolicy.clear()
+#Get statistics from all intermeadiate swiches. Use the switch with least packet counts and feed it to Bellman Ford.
+# #If not the total path is found, add another switch to the list and try again.
 
-    #Policy: Force total route
-    # Add source and dest and prefered route
-    ###########################################################################
-    if src_adr == EthAddr("0f:12:33:2f:6a:19") and dst_adr == EthAddr("9e:2e:6b:0f:25:91"):
-        route = [1, 2, 4, 5]
-        if src_dpid and dst_dpid in route:
-            for m in route:
-                for n in route:
+    del routes[:]
+    adjpolicy.clear()
+    sorted_path = sorted(path.items(), key=operator.itemgetter(1))  #Sorts the nodes acourding to least used
+    routes.append(src_dpid)
+    routes.append(dst_dpid)
+
+    for key, value in sorted_path:                                  #Adds the least used nodes in a list. Tries BF to final path is found
+        if key != src_dpid and key != dst_dpid:
+            #print "Swich added to path:", key
+            routes.append(key)
+            for m in routes:
+                for n in routes:
                     if adjacency[m][n] != None:
                         adjpolicy[m][n] = adjacency[m][n]
-                        print m, n
-            r = bellman(src_dpid,dst_dpid)
-            generate_Flows(r, src_adr, dst_adr)
-        else:
-            print "Error applying rule"
-
-
-    #Policy: Force through GW
-    # Add source and dest and preferred switches to route the traffic through
-    #Use bellman source - switch and switch - dest
-    #TODO: Add for more switches
-    ###########################################################################
-    if src_adr == EthAddr("9e:12:33:2f:6a:19") and dst_adr == EthAddr("9e:2e:6b:0f:25:91"):
-        route = [4]
-        print "ROUTE[0] = ", route[0]
-        if len(route) == 1:
-            for m in adjacency:
-                for n in adjacency:
-                    adjpolicy[m][n] = adjacency[m][n]
-            sw = bellman(src_dpid, route[0])
-            dw = bellman(route[0], dst_dpid)
-            generate_Flows((sw+dw), src_adr, dst_adr)
-
-        else:
-            print "Error appyling rule"
-
-
-
-    else:
-        adjpolicy.clear()
-        for m in adjacency:
-            for n in adjacency:
-                adjpolicy[m][n] = adjacency[m][n]
 
         r = bellman(src_dpid,dst_dpid)
-        try:
+        #print "R er :", r
+        if src_dpid in r and dst_dpid in r:                         #First when BF returns a full path, then we create the rules
             generate_Flows(r, src_adr, dst_adr)
-        except ReferenceError:
-            print "Policy could not be applied!"
-        print "No policy found, generating shortest path!"
+            return
+
+    else:
+        print "No path between switch: ", dst_dpid, " and switch: ", src_dpid
 
 
 
-#Use bellman not to generate rules, but to find shortest path.
-
-
-
-
-
-
-
-
-    #Policy: Prefered route
-    # Vertex = how much a route is worth.
-    ############################################################################
-    #if src_adr == EthAddr("9e:12:33:2f:6a:19") and dst_adr == EthAddr("9e:2e:6b:0f:25:91"):
-        #route = [1, 2, 4, 5]
-
-
-
+def _on_timer():
+    path.clear()
+    for n in sw_con:
+        n.connection.send(of.ofp_stats_request(body=of.ofp_aggregate_stats_request()))
 
 
 def launch():
@@ -252,5 +237,6 @@ def launch():
     core.openflow.addListenerByName("ConnectionUp", _handle_ConnectionUp)
     core.openflow.addListenerByName("PacketIn", _handle_PacketIn)
     core.openflow_discovery.addListenerByName("LinkEvent", link_event)
+    core.openflow.addListenerByName("AggregateFlowStatsReceived", _handle_aggregate)
 
-    #Include spanning-tree?
+    Timer(10, _on_timer, recurring=True)
