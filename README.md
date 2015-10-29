@@ -1,6 +1,6 @@
 # POX
 
-A POX controller application based using the Bellman-Ford algorithm* to find shortest path in a network.
+A POX controller application based using the Bellman-Ford algorithm to find shortest path in a network.
 The application will always try to use the least used nodes (based on packet counts) in the network.
 It listen to link events, if a link goes down the controller will delete rules on the switches which share the link.
 
