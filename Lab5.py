@@ -1,22 +1,28 @@
+"""
+Author Hans Fredrik Skappel, 2015, NTNU
+
+A POX controller application based using the Bellman-Ford algorithm* to find shortest path in a network.
+The application will always try to use the least used nodes (based on packet counts) in the network.
+It listen to link events, if a link goes down the controller will delete rules on the switches which share the link.
+
+*The Bellman-Ford function is based on "l2_bellmanford.py", written by Dr. Chih-Heng Ke.
+"""
+
 from pox.core import core
 from collections import defaultdict
 from pox.lib.recoco import Timer
 import pox.openflow.libopenflow_01 as of
 import operator
 
-link_list = []
-switches = []
-sw_con = []
+log = core.getLogger()
 adjacency = defaultdict(lambda:defaultdict(lambda:None))
 adjpolicy = defaultdict(lambda:defaultdict(lambda:None))
-table = {}
-mactable = {}
-path = {}
-log = core.getLogger()
-routes = []
+link_list, switches, sw_con, routes = [],[],[],[]
+table, mactable, path = {},{},{}
+
 
 def bellman(src_dpid, dst_dpid):
-    # Bellman is the function that finds the shortest path between switches
+    # Bellman is used to find the shortest path between switches.
     distance = {}
     previous = {}
 
@@ -48,7 +54,7 @@ def bellman(src_dpid, dst_dpid):
             r.append(p)
             q = previous[p]
         r.reverse()
-        print "Shortest path found: ",r
+        print "Bellman-Ford found shortest path: ",r
         return r
 
     except KeyError:
@@ -58,20 +64,23 @@ def bellman(src_dpid, dst_dpid):
 
 def generate_Flows(path, src_adr, dst_adr):
 
-    for m in range(len(path)):      #Iterate over total path
+    for m in range(len(path)):
+    #Iterate over total path
 
         for switch in sw_con:
 
             if len(path) == 1:
 
-                if switch.dpid == table.get(src_adr):  # Applying local switch rules on initiating
+                if switch.dpid == table.get(src_adr):
+                #Applying local switch rules on initiating (if hosts located at same switch)
                     msg = of.ofp_flow_mod()
                     msg.match.dl_dst = src_adr
                     msg.match.dl_src = dst_adr
                     msg.actions.append(of.ofp_action_output(port=mactable.get(src_adr)))
                     switch.connection.send(msg)
 
-                if switch.dpid == table.get(dst_adr):  # Applying local switch rules on initiating switch (if hosts located at same switch)
+                if switch.dpid == table.get(dst_adr):
+                #Applying local switch rules on initiating switch (if hosts located at same switch)
                     msg = of.ofp_flow_mod()
                     msg.match.dl_dst = dst_adr
                     msg.match.dl_src = src_adr
@@ -80,25 +89,26 @@ def generate_Flows(path, src_adr, dst_adr):
                     return
 
             else:
-
                 try:
                     if switch.dpid == path[m+1]:
-                        swobj2 = switch
-                    if switch.dpid == path[m]:
                         swobj1 = switch
+                    if switch.dpid == path[m]:
+                        swobj2 = switch
                 except IndexError:
                     break
 
 
         try:
-            if swobj1.dpid == table.get(src_adr): #Applying local switch rules on initiating
+            if swobj1.dpid == table.get(src_adr):
+            #Applying local switch rules on initiating
                 msg = of.ofp_flow_mod()
                 msg.match.dl_dst = src_adr
                 msg.match.dl_src = dst_adr
                 msg.actions.append(of.ofp_action_output(port=mactable.get(src_adr)))
                 swobj1.connection.send(msg)
 
-            if swobj2.dpid == table.get(dst_adr): #Applying local switch rules on dest switch
+            if swobj2.dpid == table.get(dst_adr):
+            #Applying local switch rules on dest switch
                 msg = of.ofp_flow_mod()
                 msg.match.dl_dst = dst_adr
                 msg.match.dl_src = src_adr
@@ -106,7 +116,7 @@ def generate_Flows(path, src_adr, dst_adr):
                 swobj2.connection.send(msg)
 
             for links in link_list:
-                # Finds the links
+            #Finds the links
                 if links.dpid1 == swobj1.dpid and links.dpid2 == swobj2.dpid:  # Finds the link for only one way
                     msg = of.ofp_flow_mod()
                     msg.match.dl_dst = dst_adr
@@ -133,7 +143,7 @@ def _handle_ConnectionUp(event):
 
 def _handle_aggregate(event):
     path[event.dpid]= event.stats.packet_count
-    print "AGGREGATE STATUS: Switch: ", event.dpid, "Packet count: ", event.stats.packet_count, " Byte count: ", event.stats.byte_count, "Flow count: ", event.stats.flow_count
+    print "Switch: ", event.dpid, "Packet count: ", event.stats.packet_count, "Flow count: ", event.stats.flow_count
 
 
 def link_event(event):
@@ -158,7 +168,7 @@ def link_event(event):
         #Removes the rules from the switch. Forces the packet to the controller and new shortest path is generated
         msg = of.ofp_flow_mod()
         msg.command = 0x0003
-        for sw in sw_con:       #Removes all rules on switch.
+        for sw in sw_con:
             if event.link.dpid1 == sw.connection.dpid:
                 sw.connection.send(msg)
             elif event.link.dpid1 == sw.connection.dpid:
@@ -176,13 +186,13 @@ def _handle_PacketIn(event):
         return
 
     else:
-    # If src not in table - save it (initiating switch)
+    #If src not in table - save it (initiating switch)
         if table.get(packet.src) is None:
             table[packet.src] = event.connection.dpid
             mactable[packet.src] = event.port
 
 
-    # If dst not in table - broadcast it to make it respond to ARP
+    #If dst not in table - broadcast it to make it respond to ARP
         elif table.get(packet.dst) is None:
             msg = of.ofp_packet_out(data = event.ofp)
             msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))      #flood to all except input port
@@ -211,9 +221,13 @@ def policy(src_dpid, dst_dpid, src_adr, dst_adr):
                         adjpolicy[m][n] = adjacency[m][n]
 
         r = bellman(src_dpid,dst_dpid)
-        #print "R er :", r
-        if src_dpid in r and dst_dpid in r:                         #First when BF returns a full path, then we create the rules
+        #First when BF returns a full path, then we create the rules
+        if src_dpid in r and dst_dpid in r:
+            #Sort path, rules should be installed backwards on the switches in path
+            if r[0] == src_dpid:
+                r = r[::-1]
             generate_Flows(r, src_adr, dst_adr)
+            print "Flow path generated: ", r
             return
 
 
@@ -238,5 +252,4 @@ def launch():
     core.openflow.addListenerByName("PacketIn", _handle_PacketIn)
     core.openflow_discovery.addListenerByName("LinkEvent", link_event)
     core.openflow.addListenerByName("AggregateFlowStatsReceived", _handle_aggregate)
-
     Timer(10, _on_timer, recurring=True)
