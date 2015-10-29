@@ -7,5 +7,5 @@ It listen to link events, if a link goes down the controller will delete rules o
 # Run the script
 - Install POX and Mininet
 - Add script to the ext-folder in pox
-- Start up mininet script with connection to pox
-- Runs with ./pox.py ext.Lab5
+- Start up a mininet network with connection to pox controller
+- Run application by: ./pox.py ext.Lab5
