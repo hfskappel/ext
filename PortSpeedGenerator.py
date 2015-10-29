@@ -3,7 +3,6 @@ import pox.openflow.libopenflow_01 as of
 from pox.lib.recoco import Timer
 nodes = []
 
-
 def _handle_ConnectionUp(event):
     print "Switch with DPIPD: ", event.dpid, " connected!"
     nodes.append(event)
@@ -21,12 +20,10 @@ def _handle_features_reply(event):
         print "Features request: ", m.name,m.port_no,m.hw_addr,m.curr,m.advertised,m.supported,m.peer,m.config,m.state
 
 
-
 def port_speed(event, port, hw):
     msg = of.ofp_port_mod()
     msg.port_no = port
     msg.hw_addr = hw
-    #msg.config =
     msg.advertise = of.OFPPF_10GB_FD
     event.connection.send(msg)
     print "Modified!"
