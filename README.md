@@ -1,4 +1,4 @@
-# POX
+# Network policy lab
 
 A POX controller application based using the Bellman-Ford algorithm to find shortest path in a network.
 The application will always try to use the least used nodes (based on packet counts) in the network.
