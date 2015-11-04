@@ -2,8 +2,10 @@
 Author Hans Fredrik Skappel, 2015, NTNU
 
 A POX controller application based using the Bellman-Ford algorithm* to find shortest path in a network.
-The application will always try to use the least used nodes (based on packet counts) in the network.
-It listen to link events, if a link goes down the controller will delete rules on the switches which share the link.
+The application will always try to use the least used nodes (based on byte counts) in the network.
+If a nodes' bandwidth exceeds a limit, the node is considered unavailable and is excluded.
+It listen to link events, if a link goes down the controller will delete flow rules which use the link, in order to start a
+new forwarding calculation. If a node tries to communicate when no path is available, a drop rule will be installed.
 
 *The Bellman-Ford function is based on "l2_bellmanford.py", written by Dr. Chih-Heng Ke.
 """
@@ -13,13 +15,14 @@ from collections import defaultdict
 from pox.lib.recoco import Timer
 import pox.openflow.libopenflow_01 as of
 import operator
+from pox.lib.addresses import EthAddr
 
 log = core.getLogger()
 adjacency = defaultdict(lambda:defaultdict(lambda:None))
 adjpolicy = defaultdict(lambda:defaultdict(lambda:None))
 link_list, switches, sw_con, routes = [],[],[],[]
-table, mactable, path = {},{},{}
-
+table, mactable, path, bandwidth, previous = {},{},{},{},{}
+time = 5
 
 def bellman(src_dpid, dst_dpid):
     # Bellman is used to find the shortest path between switches.
@@ -66,16 +69,14 @@ def generate_Flows(path, src_adr, dst_adr):
 
     for m in range(len(path)):
     #Iterate over total path
-
         for switch in sw_con:
-
             if len(path) == 1:
-
                 if switch.dpid == table.get(src_adr):
                 #Applying local switch rules on initiating (if hosts located at same switch)
                     msg = of.ofp_flow_mod()
                     msg.match.dl_dst = src_adr
                     msg.match.dl_src = dst_adr
+                    msg.idle_timeout = 100
                     msg.actions.append(of.ofp_action_output(port=mactable.get(src_adr)))
                     switch.connection.send(msg)
 
@@ -84,6 +85,7 @@ def generate_Flows(path, src_adr, dst_adr):
                     msg = of.ofp_flow_mod()
                     msg.match.dl_dst = dst_adr
                     msg.match.dl_src = src_adr
+                    msg.idle_timeout = 100
                     msg.actions.append(of.ofp_action_output(port=mactable.get(dst_adr)))
                     switch.connection.send(msg)
                     return
@@ -97,13 +99,13 @@ def generate_Flows(path, src_adr, dst_adr):
                 except IndexError:
                     break
 
-
         try:
             if swobj1.dpid == table.get(src_adr):
             #Applying local switch rules on initiating
                 msg = of.ofp_flow_mod()
                 msg.match.dl_dst = src_adr
                 msg.match.dl_src = dst_adr
+                msg.idle_timeout = 100
                 msg.actions.append(of.ofp_action_output(port=mactable.get(src_adr)))
                 swobj1.connection.send(msg)
 
@@ -112,6 +114,7 @@ def generate_Flows(path, src_adr, dst_adr):
                 msg = of.ofp_flow_mod()
                 msg.match.dl_dst = dst_adr
                 msg.match.dl_src = src_adr
+                msg.idle_timeout = 100
                 msg.actions.append(of.ofp_action_output(port=mactable.get(dst_adr)))
                 swobj2.connection.send(msg)
 
@@ -121,12 +124,14 @@ def generate_Flows(path, src_adr, dst_adr):
                     msg = of.ofp_flow_mod()
                     msg.match.dl_dst = dst_adr
                     msg.match.dl_src = src_adr
+                    msg.idle_timeout = 100
                     msg.actions.append(of.ofp_action_output(port=links.port1))
                     swobj1.connection.send(msg)
 
                     msg = of.ofp_flow_mod()
                     msg.match.dl_dst = src_adr
                     msg.match.dl_src = dst_adr
+                    msg.idle_timeout = 100
                     msg.actions.append(of.ofp_action_output(port=links.port2))
                     swobj2.connection.send(msg)
 
@@ -142,8 +147,15 @@ def _handle_ConnectionUp(event):
 
 
 def _handle_aggregate(event):
-    path[event.dpid]= event.stats.packet_count
-    print "Switch: ", event.dpid, "Packet count: ", event.stats.packet_count, "Flow count: ", event.stats.flow_count
+
+    if bandwidth.get(event.dpid) is None:
+        previous[event.dpid] = event.stats.byte_count
+
+    bandwidth[event.dpid] = float((8*(event.stats.byte_count - previous[event.dpid])/time)/1000)
+    previous[event.dpid] = event.stats.byte_count
+    path[event.dpid]= event.stats.byte_count
+
+    print "Switch: ", event.dpid, "Byte count: ", event.stats.byte_count, "Flow count: ", event.stats.flow_count, " Bandwidth used: ", bandwidth[event.dpid], " Kbit/s"
 
 
 def link_event(event):
@@ -152,27 +164,19 @@ def link_event(event):
 
     if event.added:
         adjacency[event.link.dpid1][event.link.dpid2] = event.link.port1
-        #Removes the rules from the switch. Forces the packet to the controller and new shortest path is generated
-        msg = of.ofp_flow_mod()
-        msg.command = 0x0003
-        for sw in sw_con:       #Removes all rules on switch.
-            if event.link.dpid1 == sw.connection.dpid:
-                sw.connection.send(msg)
-            elif event.link.dpid1 == sw.connection.dpid:
-                sw.connection.send(msg)
-
+        #Removes flow rules on switch in order to force the network to do new calculations based on the new discovered link
+        #msg = of.ofp_flow_mod(command=of.OFPFC_DELETE)
+        #for sw in sw_con:       #Removes all rules on switch.
+            #if event.link.dpid1 == sw.connection.dpid:
+                #sw.connection.send(msg)
 
     if event.removed:
     #If a link goes down
         del adjacency[event.link.dpid1][event.link.dpid2]
-        #Removes the rules from the switch. Forces the packet to the controller and new shortest path is generated
-        msg = of.ofp_flow_mod()
-        msg.command = 0x0003
+        #Removes the flow rules using the link on the switch. Forces the packet to the controller and new shortest path is generated
         for sw in sw_con:
             if event.link.dpid1 == sw.connection.dpid:
-                sw.connection.send(msg)
-            elif event.link.dpid1 == sw.connection.dpid:
-                sw.connection.send(msg)
+                sw.connection.send(of.ofp_flow_mod(command=of.OFPFC_DELETE,out_port=event.link.port1))
 
 
 def _handle_PacketIn(event):
@@ -181,7 +185,6 @@ def _handle_PacketIn(event):
     dst = table.get(packet.dst)
 
     if (src and dst) is not None:
-
         policy(src, dst, packet.src, packet.dst)
         return
 
@@ -191,7 +194,6 @@ def _handle_PacketIn(event):
             table[packet.src] = event.connection.dpid
             mactable[packet.src] = event.port
 
-
     #If dst not in table - broadcast it to make it respond to ARP
         elif table.get(packet.dst) is None:
             msg = of.ofp_packet_out(data = event.ofp)
@@ -200,11 +202,9 @@ def _handle_PacketIn(event):
             #print "Broadcast from: ", packet.src, " on port: ", event.port, "want to connect to: ", packet.dst
 
 
-
 def policy(src_dpid, dst_dpid, src_adr, dst_adr):
 #Get statistics from all intermeadiate swiches. Use the switch with least packet counts and feed it to Bellman Ford.
 # #If not the total path is found, add another switch to the list and try again.
-
     del routes[:]
     adjpolicy.clear()
     sorted_path = sorted(path.items(), key=operator.itemgetter(1))  #Sorts the nodes acourding to least used
@@ -214,11 +214,14 @@ def policy(src_dpid, dst_dpid, src_adr, dst_adr):
     for key, value in sorted_path:                                  #Adds the least used nodes in a list. Tries BF to final path is found
         if key != src_dpid and key != dst_dpid:
             #print "Swich added to path:", key
-            routes.append(key)
-            for m in routes:
-                for n in routes:
-                    if adjacency[m][n] != None:
-                        adjpolicy[m][n] = adjacency[m][n]
+            if bandwidth.get(key) < 1000:
+                routes.append(key)
+                for m in routes:
+                    for n in routes:
+                        if adjacency[m][n] != None:
+                            adjpolicy[m][n] = adjacency[m][n]
+            else:
+                print "Swich with DPID: ", key, " has too heavy traffic load"
 
         r = bellman(src_dpid,dst_dpid)
         #First when BF returns a full path, then we create the rules
@@ -227,12 +230,20 @@ def policy(src_dpid, dst_dpid, src_adr, dst_adr):
             if r[0] == src_dpid:
                 r = r[::-1]
             generate_Flows(r, src_adr, dst_adr)
-            print "Flow path generated: ", r
+            print "Flow path generated: ", r, " for: ", src_adr, " and: ", dst_adr
             return
-
 
     else:
         print "No path between switch: ", dst_dpid, " and switch: ", src_dpid
+        #Creating a drop rule to prohibit unecessary traffic to the controller
+        for sw in sw_con:
+            if sw.connection.dpid == src_dpid:
+                msg = of.ofp_flow_mod()
+                msg.match.dl_src = src_adr
+                msg.match.dl_dst = dst_adr
+                msg.hard_timeout = 20
+                sw.connection.send(msg)
+                print "Drop rule created for 20 seconds"
 
 
 def _on_timer():
@@ -252,4 +263,4 @@ def launch():
     core.openflow.addListenerByName("PacketIn", _handle_PacketIn)
     core.openflow_discovery.addListenerByName("LinkEvent", link_event)
     core.openflow.addListenerByName("AggregateFlowStatsReceived", _handle_aggregate)
-    Timer(10, _on_timer, recurring=True)
+    Timer(time, _on_timer, recurring=True)
