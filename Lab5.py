@@ -15,13 +15,13 @@ from collections import defaultdict
 from pox.lib.recoco import Timer
 import pox.openflow.libopenflow_01 as of
 import operator
-from pox.lib.addresses import EthAddr
+import pox.lib.packet as pkt
 
 log = core.getLogger()
 adjacency = defaultdict(lambda:defaultdict(lambda:None))
 adjpolicy = defaultdict(lambda:defaultdict(lambda:None))
 link_list, switches, sw_con, routes = [],[],[],[]
-table, mactable, path, bandwidth, previous = {},{},{},{},{}
+table, mactable, path, bandwidth, previous, arp = {},{},{},{},{}, {}
 time = 5
 
 def bellman(src_dpid, dst_dpid):
@@ -184,6 +184,9 @@ def _handle_PacketIn(event):
     src = table.get(packet.src)
     dst = table.get(packet.dst)
 
+    if packet.type == packet.IP_TYPE:
+        arp[packet.src] = packet.next.srcip
+
     if (src and dst) is not None:
         policy(src, dst, packet.src, packet.dst)
         return
@@ -230,7 +233,7 @@ def policy(src_dpid, dst_dpid, src_adr, dst_adr):
             if r[0] == src_dpid:
                 r = r[::-1]
             generate_Flows(r, src_adr, dst_adr)
-            print "Flow path generated: ", r, " for: ", src_adr, " and: ", dst_adr
+            print "Flow path generated: ", r, " for: ", arp.get(src_adr), " and: ", arp.get(dst_adr)
             return
 
     else:
