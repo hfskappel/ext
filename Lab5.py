@@ -217,8 +217,9 @@ def policy(src_dpid, dst_dpid, src_adr, dst_adr):
     for key, value in sorted_path:                                  #Adds the least used nodes in a list. Tries BF to final path is found
         if key != src_dpid and key != dst_dpid:
             #print "Swich added to path:", key
-            if bandwidth.get(key) < 1000:
+            if bandwidth.get(key) < 5000:
                 routes.append(key)
+                print "Node:", key, " added in path calculation"
                 for m in routes:
                     for n in routes:
                         if adjacency[m][n] != None:
